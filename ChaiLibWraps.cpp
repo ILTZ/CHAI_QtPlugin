@@ -26,6 +26,7 @@ class Chai_Channel final
     quint8              _channelNumber;
     quint8              _flags;
     Chai_ChannelState   _state;
+    Chai_ChannelMode    _mode;
 
     QVector<canmsg_t>   _frameBuffer;
     qsizetype           _lastRecived;
@@ -73,6 +74,7 @@ public:
         : _channelNumber    { number }
         , _flags            { 0 }
         , _state            { Chai_ChannelState::UNINIT }
+        , _mode             { Chai_ChannelMode::READ_WRITE }
         , _lastRecived      { 0 }
         , _lastError        { 0 }
     {
@@ -356,11 +358,72 @@ public:
         return _lastError;
     };
 
+    Chai_CANErrors ClearErrors()
+    {
+        if (_state != Chai_ChannelState::UNINIT)
+        {
+            canerrs_t __errs;
+
+            if (_lastError = CiErrsGetClear(_channelNumber, &__errs); _lastError == 0)
+            {
+                Chai_CANErrors __cErrs;
+
+                __cErrs.BOFF    = __errs.boff;
+                __cErrs.EWL     = __errs.ewl;
+                __cErrs.HWOVR   = __errs.hwovr;
+                __cErrs.SWOVR   = __errs.swovr;
+                __cErrs.WTOUT   = __errs.wtout;
+
+                return __cErrs;
+            }
+
+        }
+
+        return { };
+    };
+
+    qint16 SetMode(Chai_ChannelMode mode)
+    {
+        if (_state != Chai_ChannelState::UNINIT)
+        {
+            if (_mode == mode)
+                return 0;
+
+            quint8 __mode { 0u };
+
+            if (mode == Chai_ChannelMode::LISTEN_ONLY)
+                __mode = CI_LOM_ON;
+            else if (mode == Chai_ChannelMode::READ_WRITE)
+                __mode = CI_LOM_OFF;
+
+            if (_state == Chai_ChannelState::RUNNING)
+            {
+                ChannelStoper __stopper(this);
+
+                _lastError = CiSetLom(_channelNumber, __mode);
+            }
+            else
+            {
+                _lastError = CiSetLom(_channelNumber, __mode);
+            }
+
+            if (_lastError == 0)
+                _mode = mode;
+        }
+        else
+        {
+            _lastError = INVALID_STATE;
+        }
+
+        return _lastError;
+    };
+
     /************************************/
 
     quint8              Number()    const { return _channelNumber;  }
     quint8              Flags()     const { return _flags;          }
     Chai_ChannelState   State()     const { return _state;          }
+    Chai_ChannelMode    Mode()      const { return _mode;           }
     qint16              LastError() const { return _lastError;      }
 
 /************************************/
@@ -391,17 +454,42 @@ void Chai_CloseLib()
     }
 }
 
-qint16 Chai_ActivateChannel(quint8 channel, bool activate)
+qint16 Chai_RunChannel(quint8 channel)
 {
     if (CHANNELS.contains(channel))
     {
-        if (activate)
+        if (CHANNELS[channel]->State() == Chai_ChannelState::INIT)
+        {
+            return CHANNELS[channel]->Run();
+        }
+        else if (CHANNELS[channel]->State() == Chai_ChannelState::RUNNING)
+        {
+            return 0;
+        }
+        else
+        {
+            return INVALID_STATE;
+        }
+    }
+
+    return INVALID_CHANNEL;
+}
+
+qint16 Chai_StopChannel(quint8 channel)
+{
+    if (CHANNELS.contains(channel))
+    {
+        if (CHANNELS[channel]->State() == Chai_ChannelState::INIT)
+        {
+            return 0;
+        }
+        else if (CHANNELS[channel]->State() == Chai_ChannelState::RUNNING)
         {
             return CHANNELS[channel]->Run();
         }
         else
         {
-            return CHANNELS[channel]->Stop();
+            return INVALID_STATE;
         }
     }
 
@@ -415,9 +503,7 @@ qint16 Chai_OpenChannel(quint8 channel, quint8 flags)
         auto __ch = CHANNELS[channel];
 
         if (__ch->State() == Chai_ChannelState::UNINIT)
-            return __ch->Open(flags);
-        else
-            return 0;
+            return __ch->Open(flags);        
     }
     else
     {
@@ -459,13 +545,13 @@ QString Chai_InterpretError(qint32 errorCode)
     {
         case INVALID_STATE:
         {
-            __error = "Channel have invalid state.";
+            __error = "Channel is in invalid state.";
         }
         break;
 
         case INVALID_CHANNEL:
         {
-            __error = "This channel isn't exists";
+            __error = "Channel isn't open. Try to call Chai_OpenChannel(quint8 channel, quint8 flags) first.";
         }
         break;
 
@@ -492,7 +578,7 @@ qint16  Chai_Reset(quint8 channel)
     return INVALID_CHANNEL;
 }
 
-qint16 Chai_WaitFrames(quint8 channel, quint32 mSec)
+qint16 Chai_WaitForFramesRecived(quint8 channel, quint32 mSec)
 {
     if (CHANNELS.contains(channel))
         return CHANNELS[channel]->WaitFor(mSec);
@@ -500,7 +586,7 @@ qint16 Chai_WaitFrames(quint8 channel, quint32 mSec)
     return INVALID_CHANNEL;
 }
 
-quint16 Chai_ReadFrames(quint8 channel, QVector<QCanBusFrame> &outputFrames, qsizetype framesToRead)
+qint16 Chai_ReadFrames(quint8 channel, QVector<QCanBusFrame> &outputFrames, qsizetype framesToRead)
 {
     if (CHANNELS.contains(channel))
         CHANNELS[channel]->Read(outputFrames, framesToRead);
@@ -567,7 +653,7 @@ Chai_ChannelState Chai_GetState(quint8 channel)
     if (CHANNELS.contains(channel))
         return CHANNELS[channel]->State();
 
-    return Chai_ChannelState::UNINIT;
+    return Chai_ChannelState::UNEXISTS;
 }
 
 qint16 Chai_CloseChannel(quint8 channel)
@@ -576,4 +662,41 @@ qint16 Chai_CloseChannel(quint8 channel)
         CHANNELS.remove(channel);
 
     return 0;
+}
+
+qint16 Chai_WaitForFramesRecived(quint8 channel, quint32 timeout, QVector<QCanBusFrame> &outputFrames)
+{
+    if (CHANNELS.contains(channel))
+    {
+        auto __ch = CHANNELS[channel];
+
+        if (auto __result = __ch->WaitFor(timeout); __result > 0)
+            return __ch->Read(outputFrames, __result);
+    }
+
+    return INVALID_CHANNEL;
+}
+
+Chai_CANErrors Chai_ClearErrors(quint8 channel)
+{
+    if (CHANNELS.contains(channel))
+        return CHANNELS[channel]->ClearErrors();
+
+    return { };
+}
+
+qint16 Chai_SetMode(quint8 channel, Chai_ChannelMode mode)
+{
+    if (CHANNELS.contains(channel))
+        return CHANNELS[channel]->SetMode(mode);
+
+    return INVALID_CHANNEL;
+}
+
+Chai_ChannelMode Chai_GetMode(quint8 channel)
+{    
+    if (CHANNELS.contains(channel))
+        return CHANNELS[channel]->Mode();
+
+    return Chai_ChannelMode::INVALID;
 }

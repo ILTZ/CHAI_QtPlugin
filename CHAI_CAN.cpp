@@ -89,7 +89,7 @@ bool CHAI_CAN::open()
         }
     }
 
-    if (auto __result = Chai_ActivateChannel(_channel, true); __result == 0)
+    if (auto __result = Chai_RunChannel(_channel); __result == 0)
     {
         EnableReadNotification  (true);
         EnableCheckNotification (true);
@@ -151,7 +151,7 @@ void CHAI_CAN::resetController()
 
 bool CHAI_CAN::waitForFramesReceived(int msecs)
 {
-    if (auto __result = Chai_WaitFrames(_channel, msecs); __result > 0)
+    if (auto __result = Chai_WaitForFramesRecived(_channel, msecs); __result > 0)
     {
         QVector<QCanBusFrame> __frames;
 
